@@ -1,6 +1,6 @@
-# meta developer: @Androfon_AI
-# meta name: Poll Stats
 # meta version: 2.4
+# meta name: PollStats
+# meta developer: @Androfon_AI
 
 from telethon import events
 from .. import loader
@@ -11,19 +11,18 @@ import html
 
 
 class PollStatsModule(loader.Module):
-    """
-    Module for viewing poll statistics, including the list of users who haven't voted.
-    """
-
-    def __init__(self):
-        self.name = "📊 Poll Stats"
-        self.version = "2.4"
-        self.config = loader.ModuleConfig()
+    """Модуль для просмотра статистики опросов, включая список не проголосовавших."""
+    
+    strings = {
+        "name": "PollStats",
+        "ru_doc": "Показывает статистику опросов и список не проголосовавших"
+    }
 
     async def client_ready(self, client, db):
         self._client = client
-        # Show name and version when module is loaded
-        print(f"[Module Loaded] {self.name} v{self.version}")
+
+    def __init__(self):
+        self.config = loader.ModuleConfig()
 
     @loader.command(
         command="voters",
@@ -51,6 +50,7 @@ class PollStatsModule(loader.Module):
                 voted_user_ids = set()
                 
                 try:
+                    # Get the InputPeer for the chat where the poll is located
                     peer = await self._client.get_input_entity(reply.peer_id)
 
                     if reply.media.poll.answers:
@@ -61,7 +61,7 @@ class PollStatsModule(loader.Module):
                                     peer=peer,
                                     id=reply.id,
                                     option=answer_option.option,
-                                    limit=100,
+                                    limit=100, # Fetch up to 100 votes per request
                                     offset=current_offset
                                 ))
                                 
@@ -74,8 +74,9 @@ class PollStatsModule(loader.Module):
                     
                     all_participant_ids = set()
                     all_participants_map = {}
-
+                    # Iterate through all participants in the chat
                     async for participant in self._client.iter_participants(peer, aggressive=True):
+                        # Only consider active users (not bots or deleted accounts)
                         if isinstance(participant, User) and not participant.bot and not participant.deleted:
                             all_participant_ids.add(participant.id)
                             all_participants_map[participant.id] = participant
@@ -84,8 +85,10 @@ class PollStatsModule(loader.Module):
                     
                     non_voters_list_text = ""
                     if non_voted_user_ids:
+                        # Filter out any non-voted IDs that might not be in our current participant map (e.g., left the chat)
                         non_voters = [all_participants_map[uid] for uid in non_voted_user_ids if uid in all_participants_map]
                         
+                        # Sort non-voters for consistent output
                         non_voters.sort(key=lambda u: (u.username.lower() if u.username else (telethon_utils.get_display_name(u) or '').lower()))
                         
                         non_voters_list_items = [
@@ -105,8 +108,10 @@ class PollStatsModule(loader.Module):
                     await message.edit(final_message, parse_mode="HTML")
 
                 except Exception as e:
+                    # Catch any exceptions during API calls or data processing
                     await message.edit(f"<emoji document_id=5879813604068298387>❗️</emoji> Произошла ошибка при получении данных: <i>{html.escape(str(e))}</i>", parse_mode="HTML")
             else:
+                # Handle anonymous polls
                 final_message = (
                     f"<emoji document_id=5877485980901971030>📊</emoji> В опросе \"<b>{html.escape(poll_question_text)}</b>\" проголосовало: <b>{voters_count}</b> человек(а)."
                     f"\n<emoji document_id=5832546462478635761>🔒</emoji> Опрос анонимный, список не проголосовавших недоступен."
