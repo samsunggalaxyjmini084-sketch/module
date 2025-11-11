@@ -1,30 +1,30 @@
 # meta developer: @Androfon_AI
 # meta name: AutoJoinGame
-# meta version: 1.8.4
+# meta version: 1.9.6
+# 0100000101010100010011110100101001001001010011100010000001000111010000010100110101000101
+# (ASCII Art - ATOJIN GAME)
 
 import logging
 import asyncio
-import re
 import random
+import urllib.parse
 from telethon.tl.types import Message
 from telethon import events
 from .. import loader, utils
 
 logger = logging.getLogger(__name__)
 
-# 01000001010101000100111101001010010011100010000001000111010000010100110101000101
-# (ASCII Art - AUTOJOIN GAME)
 
 @loader.tds
 class AutoJoinGameMod(loader.Module):
-    """Модуль для автоматического нажатия кнопки при наборе в игру"""
+    """Модуль для автоматического нажатия кнопки при наборе в игру в ботах мафии"""
 
     strings = {
         "name": "AutoJoinGame",
-        "_cls_doc": "Модуль для автоматического нажатия кнопки при наборе в игру",
+        "_cls_doc": "Модуль для автоматического нажатия кнопки при наборе в игру в ботах мафии",
         "enabled": "✅ Автовход в игру включен.",
         "disabled": "❌ Автовход в игру выключен.",
-        "status": "<emoji document_id=5875291072225087249>📊</emoji> Статус автовхода:\nСтатус: {}\nЗадержка (секунды): {}\nБоты для отслеживания: {}\nРазрешенные чаты: {}\nКлючевые слова кнопок: {}",
+        "status": "<emoji document_id=5875291072225087249>📊</emoji> Статус автовхода:\nСтатус: {}\nЗадержка (секунды): {}\nБоты для отслеживания: {}\nРазрешенные чаты: {}\nКлючевые слова кнопок: {}\nРежим Deep-Link: {}",
         "error": "❌ Ошибка при нажатии кнопки: {}",
         "no_button": "⚠️ Кнопка не найдена под сообщением",
         "help_text": """<emoji document_id=5931415565955503486>🤖</emoji> AutoJoinGame - Помощь
@@ -47,7 +47,7 @@ class AutoJoinGameMod(loader.Module):
 В конфиге модуля можно изменить задержку(и) перед нажатием. Если указано несколько значений, будет выбрано случайное.
 Можно указать список ID ботов, от которых ожидать сообщения о наборе.
 Можно указать список ID чатов, в которых модуль будет активен. Если список пуст, модуль будет работать во всех чатах.
-<b>Новая настройка:</b> <code>button_keywords</code> - список ключевых слов, которые должны содержаться в тексте кнопки для ее активации. Регистр не учитывается.""",
+<b>Новая настройка:</b> <code>button_keywords</code> - список ключевых слов, которые должны содержаться в тексте кнопки для ее активации. Регистр не учитывается. <b>Если среди ключевых слов есть "🌚" или "🌝", активируется специальный режим обработки Deep-Link URL, при котором боту будет отправляться команда <code>/start &lt;параметр_start&gt;</code>, извлеченный из URL кнопки.</b>""",
         "ajgid_bots_list": """<emoji document_id=5771887475421090729>👤</emoji> Список ID ботов для мафии:
 
 🤵🏻 True Mafia <code>468253535</code>
@@ -57,15 +57,19 @@ Mafia Baku <code>1050428643</code>
 Mafia Baku Black <code>1044037207</code>
 Mafia Baku Black 2 <code>724330306</code>
 Mafioso <code>5424831786</code>
-Mafioso Platinum <code>7199004377</code>""",
+Mafioso Platinum <code>7199004377</code>
+Mafia Combat Premium <code>1634167847</code>""",
         "ajgtournaments_text": """Регистрация для турнирных команд
 
-<emoji document_id=5967333011652350314>🔴</emoji> или 🔵
+🔴 или 🔵
 Для Баку
 
 🔵 или 🟠
 Для Мафиосо
 
+🌚 или 🌝
+
+Для Комбата
 Примечание, в Мафиосо платиум можно менять эмодзи которые стоят на регистрации, поэтому смотрите на регистрации какие там эмодзи и потом нужные ставите в .cfg 
 
 Настроить можно в
@@ -101,17 +105,17 @@ Mafioso Platinum <code>7199004377</code>""",
             ),
             loader.ConfigValue(
                 "button_keywords",
-                ["присоединиться", "играть", "🙋", "🎮", "✅"],
-                lambda: "Список ключевых слов в тексте кнопки для активации автовхода (регистронезависимо).",
+                ["присоединиться", "играть", "🙋", "🎮", "✅", "🌚"],
+                lambda: "Список ключевых слов в тексте кнопки для активации автовхода (регистронезависимо). Если среди ключевых слов есть '🌚' или '🌝', активируется специальный режим обработки Deep-Link URL.",
                 validator=loader.validators.Series(loader.validators.String())
             ),
         )
-        
+
         self.last_processed_msg = None
 
-    async def client_ready(self, client, db):
+    async def client_ready(self, client, _):
         self._client = client
-        self._db = db
+        self.last_processed_msg = None
 
     @loader.command(ru_doc="Включить автовход в игру")
     async def ajgon(self, message: Message):
@@ -123,6 +127,7 @@ Mafioso Platinum <code>7199004377</code>""",
     async def ajgoff(self, message: Message):
         """Выключить автовход в игру"""
         self.config["enabled"] = False
+        self.last_processed_msg = None
         await utils.answer(message, self.strings("disabled"))
 
     @loader.command(ru_doc="Показать статус автовхода")
@@ -131,17 +136,22 @@ Mafioso Platinum <code>7199004377</code>""",
         status = "🟢 Включен" if self.config["enabled"] else "🔴 Выключен"
         delays = self.config["delays"]
         delay_display = f"[{', '.join(map(str, delays))}]" if len(delays) > 1 else str(delays[0])
-        
+
         bot_ids_display = ", ".join(map(str, self.config["bot_ids"])) if self.config["bot_ids"] else "Не указаны (любой бот)"
-        
+
         allowed_chats_display = ", ".join(map(str, self.config["allowed_chats"])) if self.config["allowed_chats"] else "Все чаты"
-        
+
+        configured_button_keywords_lower = [kw.lower() for kw in self.config["button_keywords"]]
+        deep_link_mode_active = '🌚' in configured_button_keywords_lower or '🌝' in configured_button_keywords_lower
+
         button_keywords_display = ", ".join(self.config["button_keywords"])
-        if not self.config["button_keywords"]:
-            button_keywords_display = "Не указаны (будут использованы значения по умолчанию: присоединиться, играть, 🙋, 🎮, ✅)"
-        
-        await utils.answer(message, self.strings("status").format(status, delay_display, bot_ids_display, allowed_chats_display, button_keywords_display))
-        
+        if not button_keywords_display:
+            button_keywords_display = "(пусто)"
+
+        deep_link_status_display = "🟢 Активен (включен '🌚' или '🌝' в ключевых словах)" if deep_link_mode_active else "🔴 Неактивен (нет '🌚' или '🌝' в ключевых словах)"
+
+        await utils.answer(message, self.strings("status").format(status, delay_display, bot_ids_display, allowed_chats_display, button_keywords_display, deep_link_status_display))
+
     @loader.command(ru_doc="Показать справку")
     async def ajghelp(self, message: Message):
         """Показать справку"""
@@ -153,61 +163,106 @@ Mafioso Platinum <code>7199004377</code>""",
         current_chat_id = message.chat_id
         configured_bot_ids = self.config["bot_ids"]
         bot_ids_str = ", ".join(map(str, configured_bot_ids)) if configured_bot_ids else "Не указаны (любой бот)"
-        
-        await utils.answer(message, f"<emoji document_id=5874960879434338403>🔎</emoji> Ищу сообщение с фразой \"Ведётся набор в игру\" в последних 500 сообщениях в текущем чате (ID: <code>{current_chat_id}</code>) от ботов: <code>{bot_ids_str}</code>...")
-        
+
+        configured_button_keywords_lower = [kw.lower() for kw in self.config["button_keywords"]]
+        deep_link_mode_active = '🌚' in configured_button_keywords_lower or '🌝' in configured_button_keywords_lower
+        deep_link_status_test_display = "🟢 Активен" if deep_link_mode_active else "🔴 Неактивен"
+
+        await utils.answer(message, f"<emoji document_id=5874960879434338403>🔎</emoji> Ищу сообщение с фразой \"Ведётся набор в игру\" или \"Регистрация началась!\" в последних 500 сообщениях в текущем чате (ID: <code>{current_chat_id}</code>) от ботов: <code>{bot_ids_str}</code>.\nРежим Deep-Link: {deep_link_status_test_display}...")
+
         try:
             found = False
             count = 0
-            
+
+            trigger_phrases = ["Ведётся набор в игру", "Регистрация началась!"]
+
+            keywords_to_check_for_test = configured_button_keywords_lower
+
             async for msg in self._client.iter_messages(current_chat_id, limit=500):
                 count += 1
-                
+
                 if not getattr(msg, 'text', None):
                     continue
-                
-                sender_id = getattr(msg, 'sender_id', None)
-                if configured_bot_ids and (sender_id is None or sender_id not in configured_bot_ids):
+
+                sender = await msg.get_sender()
+                sender_id = getattr(sender, 'id', None)
+
+                if not getattr(sender, 'bot', False):
                     continue
-                    
+
+                if configured_bot_ids and sender_id not in configured_bot_ids:
+                    continue
+
                 msg_text = msg.text
-                    
-                if "Ведётся набор в игру" in msg_text:
+
+                if any(phrase in msg_text for phrase in trigger_phrases):
                     info = "✅ Найдено сообщение:\n\n"
                     info += f"📝 ID сообщения: <code>{msg.id}</code>\n"
                     info += f"👤 От: <code>{sender_id if sender_id is not None else 'Неизвестно'}</code>\n"
-                    
+
                     text_preview = msg_text[:100] + "..." if len(msg_text) > 100 else msg_text
                     info += f"💬 Текст: <code>{text_preview}</code>\n\n"
-                    
+
                     if getattr(msg, 'buttons', None):
                         info += "🔘 Есть кнопки: Да\n"
                         info += "Список кнопок:\n"
+                        button_matched_in_test = False
                         for row_idx, row in enumerate(msg.buttons):
                             for btn_idx, btn in enumerate(row):
                                 try:
                                     btn_text = str(getattr(btn, 'text', f'Кнопка {btn_idx}'))
                                     btn_url = getattr(btn, 'url', None)
-                                    info += f"  • <code>{btn_text}</code>"
+
+                                    match_indicator = ""
+                                    if any(keyword in btn_text.lower() for keyword in keywords_to_check_for_test):
+                                        match_indicator = " (✅ ПОДХОДИТ!)"
+                                        button_matched_in_test = True
+
+                                    info += f"  • <code>{btn_text}</code>{match_indicator}"
                                     if btn_url:
-                                        info += f" (URL: <code>{btn_url[:50]}...</code>)" if len(btn_url) > 50 else f" (URL: <code>{btn_url}</code>)"
+                                        parsed_url = urllib.parse.urlparse(btn_url)
+                                        query_params = urllib.parse.parse_qs(parsed_url.query)
+                                        start_param = query_params.get('start', [None])[0]
+
+                                        bot_username = None
+                                        if parsed_url.hostname in ['t.me', 'telegram.me'] and parsed_url.path:
+                                            path_parts = parsed_url.path.lstrip('/').split('/')
+                                            if path_parts and path_parts[0]:
+                                                bot_username = path_parts[0]
+                                        elif parsed_url.scheme == 'tg' and parsed_url.netloc == 'resolve':
+                                            query_params_tg = urllib.parse.parse_qs(parsed_url.query)
+                                            bot_username = query_params_tg.get('domain', [None])[0]
+
+                                        url_display = f" (URL: <code>{btn_url[:50]}...</code>)" if len(btn_url) > 50 else f" (URL: <code>{btn_url}</code>)"
+
+                                        if start_param and deep_link_mode_active and bot_username:
+                                            info += f"{url_display} (Действие Deep-Link: будет отправлено <code>/start {start_param}</code> боту @{bot_username})"
+                                        elif start_param and not deep_link_mode_active and bot_username:
+                                            info += f"{url_display} (Действие Deep-Link: <b>не</b> будет отправлено, режим Deep-Link неактивен)"
+                                        else:
+                                            info += url_display
                                     else:
                                         info += " (URL: Нет)"
                                     info += "\n"
-                                except Exception:
-                                    info += f"  • Кнопка {btn_idx} (не удалось получить текст/URL)\n"
+                                except Exception as btn_ex:
+                                    logger.warning(f"Error processing button in ajgtest: {btn_ex}")
+                                    info += f"  • Кнопка {btn_idx} (не удалось получить текст/URL: {btn_ex})\n"
+                        if not button_matched_in_test and keywords_to_check_for_test:
+                            info += "\n⚠️ Ни одна кнопка не соответствует настроенным ключевым словам.\n"
+                        elif not keywords_to_check_for_test:
+                            info += "\n⚠️ Список ключевых слов для кнопок пуст. Ни одна кнопка не будет активирована по тексту.\n"
                     else:
                         info += "🔘 Есть кнопки: Нет\n"
-                    
+
                     info += f"\n📊 Проверено сообщений: {count}"
-                    
+
                     await utils.answer(message, info)
                     found = True
                     break
             
             if not found:
                 await utils.answer(message, f"❌ Сообщение с набором от настроенных ботов не найдено в текущем чате ID <code>{current_chat_id}</code>\n📊 Проверено сообщений: {count}")
-                
+
         except Exception as e:
             logger.exception(f"Error in ajgtest: {e}")
             error_text = str(e) if str(e) else "Неизвестная ошибка"
@@ -230,7 +285,7 @@ Mafioso Platinum <code>7199004377</code>""",
             if not self.config["enabled"]:
                 logger.debug("AutoJoinGame: Модуль выключен. Пропускаю сообщение.")
                 return
-            
+
             allowed_chats = self.config["allowed_chats"]
             if allowed_chats and message.chat_id not in allowed_chats:
                 logger.debug(f"AutoJoinGame: Чат {message.chat_id} не в списке разрешенных чатов ({allowed_chats}). Пропускаю сообщение {message.id}.")
@@ -239,86 +294,106 @@ Mafioso Platinum <code>7199004377</code>""",
             if not getattr(message, 'text', None):
                 logger.debug(f"AutoJoinGame: Сообщение {message.id} не содержит текста. Пропускаю.")
                 return
-            
-            if self.config["bot_ids"] and (not getattr(message, 'sender_id', None) or message.sender_id not in self.config["bot_ids"]):
-                logger.debug(f"AutoJoinGame: Сообщение {message.id} не от одного из настроенных ботов (ожидаем ID из {self.config['bot_ids']}, получили {getattr(message, 'sender_id', 'N/A')}). Пропускаю.")
+
+            sender = await message.get_sender()
+            if not getattr(sender, 'bot', False):
+                logger.debug(f"AutoJoinGame: Сообщение {message.id} не от бота. Пропускаю.")
                 return
-            
+
+            sender_id = getattr(sender, 'id', None)
+            if sender_id is None:
+                logger.warning(f"AutoJoinGame: Не удалось получить ID отправителя для сообщения {message.id}. Пропускаю.")
+                return
+
+            if self.config["bot_ids"] and sender_id not in self.config["bot_ids"]:
+                logger.debug(f"AutoJoinGame: Сообщение {message.id} от бота {sender_id}, но его ID не в списке разрешенных ботов. Пропускаю.")
+                return
+
             msg_text = message.text
-            
-            if "Ведётся набор в игру" not in msg_text:
-                logger.debug(f"AutoJoinGame: Сообщение {message.id} не содержит фразу 'Ведётся набор в игру'. Пропускаю.")
+
+            trigger_phrases = ["Ведётся набор в игру", "Регистрация началась!"]
+            if not any(phrase in msg_text for phrase in trigger_phrases):
+                logger.debug(f"AutoJoinGame: Сообщение {message.id} не содержит ни одну из фраз для активации ({trigger_phrases}). Пропускаю.")
                 return
-            
+
             if self.last_processed_msg == message.id:
                 logger.debug(f"AutoJoinGame: Сообщение {message.id} уже было обработано. Пропускаю.")
                 return
-            
+
             self.last_processed_msg = message.id
-            
-            logger.info(f"🎮 AutoJoinGame: Найдено сообщение с набором! (msg_id: {message.id}, chat_id: {message.chat_id})")
-            
+
+            logger.info(f"🎮 AutoJoinGame: Найдено сообщение с набором/регистрацией! (msg_id: {message.id}, chat_id: {message.chat_id})")
+
             if not getattr(message, 'buttons', None):
-                logger.warning(f"⚠️ AutoJoinGame: Сообщение с набором найдено (msg_id: {message.id}), но кнопок нет. Пропускаю.")
+                logger.warning(f"⚠️ AutoJoinGame: Сообщение с набором/регистрацией найдено (msg_id: {message.id}), но кнопок нет. Пропускаю.")
                 return
-            
+
             delays = self.config["delays"]
-            # Config validator ensures delays is never truly empty, so random.choice is safe
             chosen_delay = random.choice(delays)
-            
+
             logger.info(f"⏳ AutoJoinGame: Ожидание {chosen_delay} секунд перед обработкой сообщения {message.id} (выбрано из {delays})...")
             await asyncio.sleep(chosen_delay)
-            
-            configured_button_keywords = [kw.lower() for kw in self.config["button_keywords"]]
-            # Default keywords if config is empty
-            default_button_keywords = ["присоединиться", "играть", "🙋", "🎮", "✅"]
-            keywords_to_check = configured_button_keywords if configured_button_keywords else default_button_keywords
+
+            configured_button_keywords_lower = [kw.lower() for kw in self.config["button_keywords"]]
+            keywords_to_check = configured_button_keywords_lower
+
+            deep_link_mode_active = '🌚' in configured_button_keywords_lower or '🌝' in configured_button_keywords_lower
 
             button_found = False
             for row in message.buttons:
                 for button in row:
                     try:
                         button_text = str(getattr(button, 'text', ''))
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"Error getting button text for message {message.id}: {e}")
                         button_text = ''
-                    
+
                     logger.debug(f"🔍 AutoJoinGame: Проверка кнопки: '{button_text}'")
-                    
-                    if any(keyword in button_text.lower() for keyword in keywords_to_check): 
+
+                    if any(keyword in button_text.lower() for keyword in keywords_to_check):
                         logger.info(f"✅ AutoJoinGame: Найдена кнопка присоединения: '{button_text}'")
-                        
+
                         if getattr(button, 'url', None):
                             button_url = button.url
                             logger.info(f"🔗 AutoJoinGame: URL кнопки: {button_url}")
-                            
-                            match = re.search(r't\.me/([^?]+)\?start=(.+)', button_url)
-                            
-                            if match:
-                                bot_username = match.group(1)
-                                start_param = match.group(2)
-                                
-                                logger.info(f"📤 AutoJoinGame: Отправка /start {start_param} боту @{bot_username}")
-                                
+
+                            parsed_url = urllib.parse.urlparse(button_url)
+
+                            bot_username = None
+                            if parsed_url.hostname in ['t.me', 'telegram.me'] and parsed_url.path:
+                                path_parts = parsed_url.path.lstrip('/').split('/')
+                                if path_parts and path_parts[0]:
+                                    bot_username = path_parts[0]
+                            elif parsed_url.scheme == 'tg' and parsed_url.netloc == 'resolve':
+                                query_params_tg = urllib.parse.parse_qs(parsed_url.query)
+                                bot_username = query_params_tg.get('domain', [None])[0]
+
+                            query_params = urllib.parse.parse_qs(parsed_url.query)
+                            start_param = query_params.get('start', [None])[0]
+
+                            if deep_link_mode_active and bot_username and start_param:
+                                logger.info(f"📤 AutoJoinGame: Режим Deep-Link активен. Отправка /start {start_param} боту @{bot_username}")
+
                                 await self._client.send_message(
-                                    bot_username, 
+                                    bot_username,
                                     f'/start {start_param}'
                                 )
-                                
+
                                 logger.info("🎉 AutoJoinGame: Успешно отправлена команда /start (уведомление в чат не отправлено).")
                                 button_found = True
+                                break
+                            elif bot_username and start_param and not deep_link_mode_active:
+                                logger.warning(f"⚠️ AutoJoinGame: Найдена кнопка с Deep-Link URL '{button_url}', но режим Deep-Link не активирован ('🌚' или '🌝' отсутствуют в button_keywords). Команда /start не будет отправлена.")
                             else:
-                                logger.warning(f"❌ AutoJoinGame: Не удалось распарсить URL кнопки как deep-link: {button_url}. Пропускаю.")
+                                logger.warning(f"❌ AutoJoinGame: Не удалось распарсить URL кнопки как Deep-Link (не Telegram URL или не найден параметр 'start') в URL: {button_url}. Пропускаю.")
                         else:
                             logger.warning(f"⚠️ AutoJoinGame: Найдена кнопка '{button_text}', но у нее нет URL. Пропускаю.")
-                        
-                        if button_found:
-                            break
-                
+
                 if button_found:
                     break
-            
+
             if not button_found:
                 logger.warning(f"⚠️ AutoJoinGame: Кнопка присоединения не найдена под сообщением {message.id} после задержки.")
-            
+
         except Exception as e:
             logger.exception(f"❌ AutoJoinGame: Критическая ошибка в watcher для сообщения {getattr(message, 'id', 'N/A')}: {e}")
