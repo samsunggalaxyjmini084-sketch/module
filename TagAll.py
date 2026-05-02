@@ -1,4 +1,3 @@
-python
 # meta developer: @hdjsfzbxm
 # meta name: TagAll
 # meta version: 2.5.2
