@@ -1,129 +1,162 @@
-# meta developer: @hdjsfzbxm
-# meta name: PinChat # Название модуля изменено
-# meta version: 1.0.3 # Версия обновлена
+# meta developer: @yourhandle
+# meta name: Just leave
+# meta version: 1.1.2 # Версия обновлена
 import logging
-from telethon.tl.types import Message
-from telethon.errors import RPCError
-from telethon import functions
 from .. import loader, utils
+from asyncio import sleep
+from telethon.tl.functions.channels import LeaveChannelRequest
+from telethon.errors.rpcerrorlist import (
+    ChatAdminRequiredError,
+    ChannelPrivateError,
+    UserIsBlockedError,
+    PeerIdInvalidError,
+    ChatIdInvalidError,
+    UserNotParticipantError,
+)
+from telethon.tl.types import User
 
 logger = logging.getLogger(__name__)
 
 
 @loader.tds
-class PinChatMod(loader.Module): # Название класса изменено
-    """Модуль для закрепления (пиннинга) чатов в вашем списке чатов по их ID."""
-
+class LeaveMod(loader.Module):
     strings = {
-        "name": "PinChat", # Название в strings изменено
-        "_cls_doc": "Модуль для закрепления (пиннинга) чатов в вашем списке чатов по их ID.",
-        "no_args": "⚠️ Укажите ID чата для закрепления. Пример: <code>.pinchat -1001234567890</code>", # Команда в примере изменена
-        "invalid_chat_id": "❌ Неверный ID чата. Укажите числовой ID.",
-        "chat_not_found": "❌ Чат с ID <code>{chat_id}</code> не найден или недоступен.",
-        "pin_success": "✅ Чат <code>{chat_id}</code> успешно закреплен в вашем списке чатов.",
-        "pin_already_pinned": "ℹ️ Чат <code>{chat_id}</code> уже закреплен в вашем списке чатов.",
-        "pin_fail": "❌ Не удалось закрепить чат <code>{chat_id}</code>: {error}",
-        "unpin_no_args": "⚠️ Укажите ID чата для открепления. Пример: <code>.unpinchat -1001234567890</code>", # Команда в примере изменена
-        "unpin_success": "✅ Чат <code>{chat_id}</code> успешно откреплен из вашего списка чатов.",
-        "unpin_not_pinned": "ℹ️ Чат <code>{chat_id}</code> не закреплен в вашем списке чатов.",
-        "unpin_fail": "❌ Не удалось открепить чат <code>{chat_id}</code>: {error}",
+        "name": "Just leave",
+        "_cls_doc": "Модуль для выхода из текущего или указанного по ID чата, без последующих сообщений.",
+        "no_chat": "<b>Невозможно выполнить команду: нет текущего чата.</b>",
+        "leaving_current": "<b>Выхожу из текущего чата...</b>",
+        "leaving_specified": "<b>Выхожу из чата <code>{chat_id}</code>...</b>",
+        "leave_error": "❌ Не удалось покинуть чат <code>{chat_id}</code>: {error}",
+        "chat_not_found": "❌ Чат <code>{chat_id}</code> не найден или недоступен.",
+        "not_a_group_or_channel": "❌ Чат <code>{chat_id}</code> является личным чатом с пользователем или ботом. "
+                                  "Для таких чатов нет команды 'покинуть'.",
+        "help_text": ".leave [ID чата] [del]\n"
+                     "Ливает из текущего чата или из указанного по ID.\n"
+                     "Если указан 'del', удаляет сообщение команды перед уходом, иначе оставляет статус выхода."
+                     "После выхода ничего не пишет (в случае успеха)."
     }
 
-    def __init__(self):
-        self.config = loader.ModuleConfig()
-
-    async def client_ready(self, client, _):
-        self._client = client
-
-    async def _process_pin_unpin(self, message: Message, pinned: bool):
-        """Вспомогательная функция для логики закрепления/открепления чатов."""
-        args = utils.get_args_raw(message)
+    @loader.sudo
+    async def leavecmd(self, message):
+        """
+        .leave [ID чата] [del]
+        Ливает из текущего чата или из указанного по ID.
+        Если указан 'del', удаляет сообщение команды перед уходом, иначе оставляет статус выхода.
+        После выхода ничего не пишет (в случае успеха).
+        """
+        args_raw = utils.get_args_raw(message)
         
-        if not args:
-            await utils.answer(message, self.strings("no_args") if pinned else self.strings("unpin_no_args"))
+        target_chat_id = message.chat_id
+        delete_command = False
+        
+        # Обработка случая, когда нет контекста чата (например, команда в "Избранном")
+        if not message.chat:
+            await message.respond(self.strings("no_chat")) # Используем respond вместо edit
             return
+
+        # Разбираем аргументы: сначала пытаемся получить ID чата
+        parts = args_raw.split(maxsplit=1)
+        
+        if parts:
+            potential_chat_id_str = parts[0]
+            remaining_args = parts[1] if len(parts) > 1 else None
+
+            try:
+                potential_chat_id = int(potential_chat_id_str)
+                target_chat_id = potential_chat_id
+                if remaining_args and remaining_args.lower() == "del":
+                    delete_command = True
+            except ValueError:
+                # Если первая часть не число, то это не ID чата.
+                # Проверяем, является ли вся строка 'del'
+                if args_raw.lower() == "del":
+                    delete_command = True
+                # target_chat_id остается ID текущего чата
+        
+        # Подготавливаем начальное сообщение статуса
+        initial_status_text = ""
+        if target_chat_id == message.chat_id:
+            initial_status_text = self.strings("leaving_current")
+        else:
+            initial_status_text = self.strings("leaving_specified").format(chat_id=target_chat_id)
+
+        status_message_to_update = None # Ссылка на сообщение, которое будет обновляться статусом
+
+        if delete_command:
+            await message.delete()
+            # Если команда удалена, status_message_to_update остается None,
+            # и никаких последующих сообщений отправляться не будет, даже об ошибках.
+        else:
+            try:
+                # Пытаемся изменить оригинальное сообщение команды
+                status_message_to_update = await message.edit(initial_status_text)
+            except Exception as e: # Ловим любые исключения, включая RPCError для "Message author required"
+                logger.warning(f"Не удалось изменить сообщение {message.id} из-за {type(e).__name__}: {e}. Отправляю новое сообщение вместо этого.")
+                # Если изменение не удалось, отправляем новое сообщение и используем его для последующих обновлений
+                status_message_to_update = await message.respond(initial_status_text)
+        
+        await sleep(1) # Небольшая задержка перед фактическим выходом
 
         try:
-            target_chat_id = int(args)
-        except ValueError:
-            await utils.answer(message, self.strings("invalid_chat_id"))
-            return
+            target_entity = await message.client.get_entity(target_chat_id)
 
-        action_text = "закрепить" if pinned else "открепить"
-        await utils.answer(message, f"⏳ Пытаюсь {action_text} чат <code>{target_chat_id}</code> в вашем списке чатов...")
-
-        try:
-            # get_entity может вернуть Channel, User, Chat, но ToggleDialogPin ожидает InputPeer
-            # Для надежности, получаем InputPeer из dialog.entity
-            entity = await self._client.get_entity(target_chat_id)
-        except (ValueError, TypeError):
-            logger.error(f"PinChat: Чат с ID {target_chat_id} не найден.") # Имя модуля в логе изменено
-            await utils.answer(message, self.strings("chat_not_found").format(chat_id=target_chat_id))
-            return
-        except Exception as e:
-            logger.error(f"PinChat: Ошибка при получении сущности чата {target_chat_id}: {e}", exc_info=True) # Имя модуля в логе изменено
-            await utils.answer(message, self.strings("chat_not_found").format(chat_id=target_chat_id))
-            return
-
-        try:
-            # Ищем диалог, чтобы проверить его текущий статус закрепления
-            target_dialog = None
-            async for dialog in self._client.iter_dialogs():
-                if dialog.id == target_chat_id:
-                    target_dialog = dialog
-                    break
-            
-            if not target_dialog:
-                await utils.answer(message, self.strings("chat_not_found").format(chat_id=target_chat_id))
+            if isinstance(target_entity, User):
+                error_msg = self.strings("not_a_group_or_channel").format(chat_id=target_chat_id)
+                await self._report_error_status(status_message_to_update, target_chat_id, error_msg, delete_command)
+                logger.warning(error_msg)
                 return
 
-            is_currently_pinned = target_dialog.pinned
+            await message.client(LeaveChannelRequest(target_chat_id))
 
-            if pinned: # Закрепляем
-                if is_currently_pinned:
-                    await utils.answer(message, self.strings("pin_already_pinned").format(chat_id=target_chat_id))
-                    return
-                # Используем низкоуровневый RPC-вызов для закрепления
-                await self._client(functions.messages.ToggleDialogPinRequest(
-                    peer=target_dialog.entity,
-                    pinned=True
-                ))
-                await utils.answer(message, self.strings("pin_success").format(chat_id=target_chat_id))
-                logger.info(f"PinChat: Чат {target_chat_id} успешно закреплен.") # Имя модуля в логе изменено
-            else: # Открепляем
-                if not is_currently_pinned:
-                    await utils.answer(message, self.strings("unpin_not_pinned").format(chat_id=target_chat_id))
-                    return
-                # Используем низкоуровневый RPC-вызов для открепления
-                await self._client(functions.messages.ToggleDialogPinRequest(
-                    peer=target_dialog.entity,
-                    pinned=False
-                ))
-                await utils.answer(message, self.strings("unpin_success").format(chat_id=target_chat_id))
-                logger.info(f"PinChat: Чат {target_chat_id} успешно откреплен.") # Имя модуля в логе изменено
+            logger.info(f"Успешно покинул чат {target_chat_id}")
+            # Если успешно покинули, никаких сообщений больше не отправляем, как запрошено.
+            # Сообщение статуса (если не del) просто останется на месте.
 
-        except RPCError as e:
-            logger.error(f"PinChat: Ошибка Telethon RPC при {action_text} чата {target_chat_id}: {e}", exc_info=True) # Имя модуля в логе изменено
-            await utils.answer(message, self.strings("pin_fail").format(chat_id=target_chat_id, error=e) if pinned else self.strings("unpin_fail").format(chat_id=target_chat_id, error=e))
+        except UserNotParticipantError:
+            error_msg = f"Я не состою в чате <code>{target_chat_id}</code>, чтобы его покинуть."
+            await self._report_error_status(status_message_to_update, target_chat_id, error_msg, delete_command)
+            logger.warning(error_msg)
+        except (ChatAdminRequiredError, ChannelPrivateError, UserIsBlockedError, PeerIdInvalidError, ChatIdInvalidError, ValueError) as e:
+            error_message = str(e)
+            if isinstance(e, ChatAdminRequiredError):
+                error_message = "У меня нет прав администратора для выхода из этого чата."
+            elif isinstance(e, ChannelPrivateError):
+                error_message = "Это приватный канал, я не могу из него выйти таким образом."
+            elif isinstance(e, UserIsBlockedError):
+                error_message = "Пользователь заблокирован, невозможно выполнить операцию."
+            elif isinstance(e, (PeerIdInvalidError, ChatIdInvalidError, ValueError)):
+                 error_message = "Указан неверный или недоступный ID чата."
+
+            await self._report_error_status(status_message_to_update, target_chat_id, error_message, delete_command)
+            logger.error(f"Не удалось покинуть чат {target_chat_id}: {error_message}")
         except Exception as e:
-            logger.exception(f"PinChat: Неожиданная ошибка при {action_text} чата {target_chat_id}: {e}") # Имя модуля в логе изменено
-            await utils.answer(message, self.strings("pin_fail").format(chat_id=target_chat_id, error=e) if pinned else self.strings("unpin_fail").format(chat_id=target_chat_id, error=e))
+            logger.exception(f"Произошла непредвиденная ошибка при попытке покинуть чат {target_chat_id}")
+            await self._report_error_status(status_message_to_update, target_chat_id, str(e), delete_command)
 
+    async def _report_error_status(self, status_message: Message, chat_id: int, error_text: str, delete_command_used: bool):
+        """Вспомогательная функция для обновления сообщения статуса с ошибкой или отправки нового сообщения при сбое."""
+        if delete_command_used:
+            # Если был использован 'del', никаких сообщений отправляться/изменяться не должно, только запись в лог.
+            logger.error(f"Произошла ошибка после команды 'del' для чата {chat_id}: {error_text}. Пользователю сообщение не отправлено.")
+            return
 
-    @loader.command(ru_doc="Закрепить чат в вашем списке чатов по его ID.")
-    async def pinchat(self, message: Message): # Название команды изменено
-        """
-        Закрепляет чат в вашем списке чатов.
-        Использование: .pinchat <chat_id>
-        Пример: .pinchat -1001234567890
-        """
-        await self._process_pin_unpin(message, True)
-
-    @loader.command(ru_doc="Открепить чат из вашего списка чатов по его ID.")
-    async def unpinchat(self, message: Message): # Название команды изменено
-        """
-        Открепляет чат из вашего списка чатов.
-        Использование: .unpinchat <chat_id>
-        Пример: .unpinchat -1001234567890
-        """
-        await self._process_pin_unpin(message, False)
+        full_error_text = self.strings("leave_error").format(chat_id=chat_id, error=error_text)
+        
+        if status_message: # Пытаемся обновить сообщение статуса, если оно существует
+            try:
+                await status_message.edit(full_error_text)
+            except Exception as e: # Ловим любые исключения при попытке редактирования
+                logger.warning(f"Не удалось изменить сообщение статуса {status_message.id} с ошибкой {type(e).__name__}: {e}. Пытаюсь ответить вместо этого.")
+                try:
+                    # Если редактирование не удалось, пытаемся ответить в тот же чат, где было сообщение статуса
+                    await status_message.respond(full_error_text)
+                except Exception as e2:
+                    logger.error(f"Двойной откат не удался, не удалось сообщить об ошибке в чат {status_message.chat_id}: {e2}", exc_info=True)
+        else: # Этот блок теоретически не должен быть достигнут, если delete_command_used == False
+            # На всякий случай, если status_message почему-то None, а delete_command_used == False,
+            # пытаемся ответить в оригинальном чате команды.
+            try:
+                # Используем message.chat_id из оригинального message, чтобы ответить в тот же чат.
+                await self._client.send_message(message.chat_id, full_error_text) 
+            except Exception as e:
+                logger.error(f"Откат на send_message не удался, не удалось сообщить об ошибке в чат {message.chat_id}: {e}", exc_info=True)
